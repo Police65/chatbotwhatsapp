@@ -1,112 +1,35 @@
-const { createBot, createProvider, createFlow, addKeyword } = require('@bot-whatsapp/bot')
-const QRPortalWeb = require('@bot-whatsapp/portal')
-const BaileysProvider = require('@bot-whatsapp/provider/baileys')
-const PostgreSQLAdapter = require('@bot-whatsapp/database/postgres')
+// ... (configuraciones anteriores se mantienen igual)
 
-// Configuración PostgreSQL
-const POSTGRES_CONFIG = {
-    host: 'localhost',
-    user: 'postgres',
-    database: 'chatbotwsciec',
-    password: 'Ciec2025!Db$@1xZ',
-    port: 5432,
-}
+// Flujo de Servicios
+const flowServicios = addKeyword(['servicios', 'servicio'])
+    .addAnswer([
+        '🏢 Nuestros servicios incluyen:',
+        '- Salas de conferencias equipadas',
+        '- Espacios para eventos sociales',
+        '- Equipo audiovisual completo',
+        '- Catering profesional',
+        '\nEscribe *reservar* para iniciar una reserva'
+    ]);
 
-// Validaciones mejoradas
-const validarEntrada = (mensaje, tipo) => {
-    const validaciones = {
-        texto: /^[a-zA-ZáéíóúÁÉÍÓÚñÑ\s]{2,50}$/,
-        numero: /^\d+$/,
-        fecha: /^(0[1-9]|[12][0-9]|3[01])\/(0[1-9]|1[012])\/\d{4}$/,
-        contacto: /^(\+\d{1,3}[- ]?)?\d{9,15}$|^[^\s@]+@[^\s@]+\.[^\s@]+$/
-    }
-    
-    if (!validaciones[tipo].test(mensaje)) {
-        return `❌ Formato inválido para ${tipo}`
-    }
-    return null
-}
+// Flujo de Horarios
+const flowHorarios = addKeyword(['horario', 'horarios'])
+    .addAnswer([
+        '⏰ Horarios de atención:',
+        '- Lunes a Viernes: 8:00 AM - 6:00 PM',
+        '- Sábados: 9:00 AM - 2:00 PM',
+        '- Domingos: Solo eventos especiales'
+    ]);
 
-// Conexión a PostgreSQL
-let dbClient
+// Flujo de Contacto
+const flowContactoDirecto = addKeyword(['contacto', 'llamar'])
+    .addAnswer([
+        '📞 Contáctanos directamente:',
+        '- Teléfono: +58 241-1234567',
+        '- Email: eventos@camaracarabobo.com.ve',
+        '- Dirección: Av. Principal, Cámara de Industriales, Valencia'
+    ]);
 
-const initDB = async () => {
-    const { Client } = require('pg')
-    const client = new Client(POSTGRES_CONFIG)
-    await client.connect()
-    dbClient = client
-}
-
-// Flujo de confirmación con PostgreSQL
-const flowConfirmacion = addKeyword(['confirmar'])
-    .addAnswer(async (ctx, { flowDynamic }) => {
-        try {
-            // Registrar usuario
-            await dbClient.query(`
-                INSERT INTO users (phone, name)
-                VALUES ($1, $2)
-                ON CONFLICT (phone) DO NOTHING`,
-                [ctx.from, ctx.tipoEvento]
-            )
-
-            // Registrar evento
-            const eventRes = await dbClient.query(`
-                INSERT INTO events (name, start_date, end_date, capacity, location)
-                VALUES ($1, $2, $3, $4, $5)
-                RETURNING id`,
-                [
-                    ctx.tipoEvento,
-                    new Date(ctx.fechaEvento.split('/').reverse().join('-')),
-                    new Date(ctx.fechaEvento.split('/').reverse().join('-')),
-                    ctx.numeroPersonas,
-                    'Cámara de Industriales de Carabobo'
-                ]
-            )
-
-            // Registrar reserva
-            await dbClient.query(`
-                INSERT INTO reservations (event_id, user_id, status)
-                SELECT $1, id, 'confirmed'
-                FROM users WHERE phone = $2`,
-                [eventRes.rows[0].id, ctx.from]
-            )
-
-            await flowDynamic(`✅ Reserva confirmada para el ${ctx.fechaEvento}
-                \nEvento: ${ctx.tipoEvento}
-                \nAsistentes: ${ctx.numeroPersonas}
-                \nRecibirás confirmación en tu WhatsApp`)
-        } catch (e) {
-            console.error('Error en DB:', e)
-            await flowDynamic('❌ Error al procesar la reserva. Intenta nuevamente.')
-        }
-    })
-
-// Flujos mejorados con validaciones
-const flowNumeroPersonas = addKeyword([])
-    .addAnswer('👥 Número de asistentes (máximo 1000):', { capture: true }, async (ctx, { gotoFlow, fallBack }) => {
-        const error = validarEntrada(ctx.body, 'numero')
-        if (error || ctx.body > 1000) return fallBack('❌ Número inválido (1-1000)')
-        ctx.numeroPersonas = ctx.body
-        return gotoFlow(flowConfirmacion)
-    })
-
-const flowFechaEvento = addKeyword([])
-    .addAnswer('📅 Fecha del evento (DD/MM/AAAA):', { capture: true }, async (ctx, { gotoFlow, fallBack }) => {
-        const error = validarEntrada(ctx.body, 'fecha')
-        if (error) return fallBack(error)
-        ctx.fechaEvento = ctx.body
-        return gotoFlow(flowNumeroPersonas)
-    })
-
-const flowTipoEvento = addKeyword(['reservar'])
-    .addAnswer('🎉 Tipo de evento (ej: conferencia, exposición):', { capture: true }, async (ctx, { gotoFlow, fallBack }) => {
-        const error = validarEntrada(ctx.body, 'texto')
-        if (error) return fallBack(error)
-        ctx.tipoEvento = ctx.body
-        return gotoFlow(flowFechaEvento)
-    })
-
-// Flujo principal mejorado
+// Flujo principal mejorado (ya existente en tu código)
 const flowPrincipal = addKeyword(['hola', 'menu'])
     .addAnswer('🏭 ¡Bienvenido a la Cámara de Industriales de Carabobo!')
     .addAnswer(
@@ -122,11 +45,22 @@ const flowPrincipal = addKeyword(['hola', 'menu'])
         [flowTipoEvento, flowServicios, flowHorarios, flowContactoDirecto]
     )
 
+// ... (el resto del código se mantiene igual)
+
 const main = async () => {
-    await initDB() // Inicializar conexión DB
+    await initDB()
     
     const adapterDB = new PostgreSQLAdapter(POSTGRES_CONFIG)
-    const adapterFlow = createFlow([flowPrincipal, flowTipoEvento, flowFechaEvento, flowNumeroPersonas, flowConfirmacion])
+    const adapterFlow = createFlow([
+        flowPrincipal,
+        flowServicios,     // ← Añadidos aquí
+        flowHorarios,      // ←
+        flowContactoDirecto, // ←
+        flowTipoEvento,
+        flowFechaEvento,
+        flowNumeroPersonas,
+        flowConfirmacion
+    ])
     const adapterProvider = createProvider(BaileysProvider)
 
     createBot({
