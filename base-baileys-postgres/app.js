@@ -1,104 +1,140 @@
 const { createBot, createProvider, createFlow, addKeyword } = require('@bot-whatsapp/bot')
-
 const QRPortalWeb = require('@bot-whatsapp/portal')
 const BaileysProvider = require('@bot-whatsapp/provider/baileys')
 const PostgreSQLAdapter = require('@bot-whatsapp/database/postgres')
 
-/**
- * Declaramos las conexiones de PostgreSQL
- */
+// Configuración PostgreSQL
+const POSTGRES_CONFIG = {
+    host: 'localhost',
+    user: 'postgres',
+    database: 'chatbotwsciec',
+    password: 'Ciec2025!Db$@1xZ',
+    port: 5432,
+}
 
-const POSTGRES_DB_HOST = 'btyzztqbcaewuzslkvml.supabase.co'
-const POSTGRES_DB_USER = 'postgres'
-const POSTGRES_DB_PASSWORD = 'Ciec2025!Db$@1xZ'
-const POSTGRES_DB_NAME = 'postgres'
-const POSTGRES_DB_PORT = '5432'
+// Validaciones mejoradas
+const validarEntrada = (mensaje, tipo) => {
+    const validaciones = {
+        texto: /^[a-zA-ZáéíóúÁÉÍÓÚñÑ\s]{2,50}$/,
+        numero: /^\d+$/,
+        fecha: /^(0[1-9]|[12][0-9]|3[01])\/(0[1-9]|1[012])\/\d{4}$/,
+        contacto: /^(\+\d{1,3}[- ]?)?\d{9,15}$|^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    }
+    
+    if (!validaciones[tipo].test(mensaje)) {
+        return `❌ Formato inválido para ${tipo}`
+    }
+    return null
+}
 
-/**
- * Aqui declaramos los flujos hijos, los flujos se declaran de atras para adelante, es decir que si tienes un flujo de este tipo:
- *
- *          Menu Principal
- *           - SubMenu 1
- *             - Submenu 1.1
- *           - Submenu 2
- *             - Submenu 2.1
- *
- * Primero declaras los submenus 1.1 y 2.1, luego el 1 y 2 y al final el principal.
- */
+// Conexión a PostgreSQL
+let dbClient
 
-const flowSecundario = addKeyword(['2', 'siguiente']).addAnswer(['📄 Aquí tenemos el flujo secundario'])
+const initDB = async () => {
+    const { Client } = require('pg')
+    const client = new Client(POSTGRES_CONFIG)
+    await client.connect()
+    dbClient = client
+}
 
-const flowDocs = addKeyword(['doc', 'documentacion', 'documentación']).addAnswer(
-    [
-        '📄 Aquí encontras las documentación recuerda que puedes mejorarla',
-        'https://bot-whatsapp.netlify.app/',
-        '\n*2* Para siguiente paso.',
-    ],
-    null,
-    null,
-    [flowSecundario]
-)
+// Flujo de confirmación con PostgreSQL
+const flowConfirmacion = addKeyword(['confirmar'])
+    .addAnswer(async (ctx, { flowDynamic }) => {
+        try {
+            // Registrar usuario
+            await dbClient.query(`
+                INSERT INTO users (phone, name)
+                VALUES ($1, $2)
+                ON CONFLICT (phone) DO NOTHING`,
+                [ctx.from, ctx.tipoEvento]
+            )
 
-const flowTuto = addKeyword(['tutorial', 'tuto']).addAnswer(
-    [
-        '🙌 Aquí encontras un ejemplo rapido',
-        'https://bot-whatsapp.netlify.app/docs/example/',
-        '\n*2* Para siguiente paso.',
-    ],
-    null,
-    null,
-    [flowSecundario]
-)
+            // Registrar evento
+            const eventRes = await dbClient.query(`
+                INSERT INTO events (name, start_date, end_date, capacity, location)
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING id`,
+                [
+                    ctx.tipoEvento,
+                    new Date(ctx.fechaEvento.split('/').reverse().join('-')),
+                    new Date(ctx.fechaEvento.split('/').reverse().join('-')),
+                    ctx.numeroPersonas,
+                    'Cámara de Industriales de Carabobo'
+                ]
+            )
 
-const flowGracias = addKeyword(['gracias', 'grac']).addAnswer(
-    [
-        '🚀 Puedes aportar tu granito de arena a este proyecto',
-        '[*opencollective*] https://opencollective.com/bot-whatsapp',
-        '[*buymeacoffee*] https://www.buymeacoffee.com/leifermendez',
-        '[*patreon*] https://www.patreon.com/leifermendez',
-        '\n*2* Para siguiente paso.',
-    ],
-    null,
-    null,
-    [flowSecundario]
-)
+            // Registrar reserva
+            await dbClient.query(`
+                INSERT INTO reservations (event_id, user_id, status)
+                SELECT $1, id, 'confirmed'
+                FROM users WHERE phone = $2`,
+                [eventRes.rows[0].id, ctx.from]
+            )
 
-const flowDiscord = addKeyword(['discord']).addAnswer(
-    ['🤪 Únete al discord', 'https://link.codigoencasa.com/DISCORD', '\n*2* Para siguiente paso.'],
-    null,
-    null,
-    [flowSecundario]
-)
+            await flowDynamic(`✅ Reserva confirmada para el ${ctx.fechaEvento}
+                \nEvento: ${ctx.tipoEvento}
+                \nAsistentes: ${ctx.numeroPersonas}
+                \nRecibirás confirmación en tu WhatsApp`)
+        } catch (e) {
+            console.error('Error en DB:', e)
+            await flowDynamic('❌ Error al procesar la reserva. Intenta nuevamente.')
+        }
+    })
 
-const flowPrincipal = addKeyword(['hola', 'ole', 'alo'])
-    .addAnswer('🙌 Hola bienvenido a este *Chatbot*')
+// Flujos mejorados con validaciones
+const flowNumeroPersonas = addKeyword([])
+    .addAnswer('👥 Número de asistentes (máximo 1000):', { capture: true }, async (ctx, { gotoFlow, fallBack }) => {
+        const error = validarEntrada(ctx.body, 'numero')
+        if (error || ctx.body > 1000) return fallBack('❌ Número inválido (1-1000)')
+        ctx.numeroPersonas = ctx.body
+        return gotoFlow(flowConfirmacion)
+    })
+
+const flowFechaEvento = addKeyword([])
+    .addAnswer('📅 Fecha del evento (DD/MM/AAAA):', { capture: true }, async (ctx, { gotoFlow, fallBack }) => {
+        const error = validarEntrada(ctx.body, 'fecha')
+        if (error) return fallBack(error)
+        ctx.fechaEvento = ctx.body
+        return gotoFlow(flowNumeroPersonas)
+    })
+
+const flowTipoEvento = addKeyword(['reservar'])
+    .addAnswer('🎉 Tipo de evento (ej: conferencia, exposición):', { capture: true }, async (ctx, { gotoFlow, fallBack }) => {
+        const error = validarEntrada(ctx.body, 'texto')
+        if (error) return fallBack(error)
+        ctx.tipoEvento = ctx.body
+        return gotoFlow(flowFechaEvento)
+    })
+
+// Flujo principal mejorado
+const flowPrincipal = addKeyword(['hola', 'menu'])
+    .addAnswer('🏭 ¡Bienvenido a la Cámara de Industriales de Carabobo!')
     .addAnswer(
         [
-            'te comparto los siguientes links de interes sobre el proyecto',
-            '👉 *doc* para ver la documentación',
-            '👉 *gracias*  para ver la lista de videos',
-            '👉 *discord* unirte al discord',
+            'Opciones disponibles:',
+            '👉 *reservar* - Reservar espacio para evento',
+            '👉 *contacto* - Información de contacto',
+            '👉 *horarios* - Horarios de atención',
+            '👉 *servicios* - Nuestros servicios'
         ],
         null,
         null,
-        [flowDocs, flowGracias, flowTuto, flowDiscord]
+        [flowTipoEvento, flowServicios, flowHorarios, flowContactoDirecto]
     )
 
 const main = async () => {
-    const adapterDB = new PostgreSQLAdapter({
-        host: POSTGRES_DB_HOST,
-        user: POSTGRES_DB_USER,
-        database: POSTGRES_DB_NAME,
-        password: POSTGRES_DB_PASSWORD,
-        port: POSTGRES_DB_PORT,
-    })
-    const adapterFlow = createFlow([flowPrincipal])
+    await initDB() // Inicializar conexión DB
+    
+    const adapterDB = new PostgreSQLAdapter(POSTGRES_CONFIG)
+    const adapterFlow = createFlow([flowPrincipal, flowTipoEvento, flowFechaEvento, flowNumeroPersonas, flowConfirmacion])
     const adapterProvider = createProvider(BaileysProvider)
+
     createBot({
         flow: adapterFlow,
         provider: adapterProvider,
         database: adapterDB,
     })
+
     QRPortalWeb()
 }
 
